@@ -165,3 +165,63 @@ def test_box_drag_start_on_ui_is_ignored(monkeypatch):
     tool = app._tools["box"]
     tool.handle_input(FakeIO(mouse_pos=(120.0, 240.0), clicked=True))
     assert not tool.dragging
+
+
+class FakePick:
+    """Stand-in for the polyscope PickResult."""
+
+    def __init__(self, is_hit: bool = True) -> None:
+        self.is_hit = is_hit
+        self.position = np.array([1.0, 2.0, 3.0])
+
+
+def test_double_right_click_moves_gizmo_to_point(monkeypatch):
+    """A double right-click places the gizmo center on the picked point."""
+    from pcd_segmentation.core.model import PointCloudData
+
+    io = FakeIO(mouse_pos=(120.0, 240.0))
+    io.MouseDoubleClicked = [False, True, False]
+    app, _ = make_app(monkeypatch, io=io)
+    app.cloud = PointCloudData(points=np.zeros((5, 3)))
+    view_calls: list[object] = []
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsMousePosValid", lambda: True)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
+    monkeypatch.setattr("pcd_segmentation.app.ps.pick",
+                        lambda screen_coords=None, buffer_inds=None: FakePick())
+    monkeypatch.setattr("pcd_segmentation.app.ps.set_view_center_and_look_at",
+                        lambda pos, fly_to=False: view_calls.append(pos))
+    app._handle_recenter_gesture()
+    assert app.gizmo_enabled
+    assert np.allclose(app._gizmo_base[:3, 3], [1.0, 2.0, 3.0])
+    assert view_calls == []  # the view must not be recentered
+
+
+def test_double_right_click_noop_cases(monkeypatch):
+    """The gesture is ignored without a hit, over UI, or with no cloud."""
+    no_hit = FakeIO(mouse_pos=(120.0, 240.0))
+    no_hit.MouseDoubleClicked = [False, True, False]
+    app, _ = make_app(monkeypatch, io=no_hit)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsMousePosValid", lambda: True)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
+    monkeypatch.setattr("pcd_segmentation.app.ps.pick",
+                        lambda screen_coords=None, buffer_inds=None: FakePick(is_hit=False))
+    app._handle_recenter_gesture()
+    assert np.allclose(app._gizmo_base, np.eye(4))
+
+    hover = FakeIO(mouse_pos=(120.0, 240.0))
+    hover.MouseDoubleClicked = [False, True, False]
+    app, _ = make_app(monkeypatch, io=hover)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: True)
+    monkeypatch.setattr("pcd_segmentation.app.ps.pick",
+                        lambda screen_coords=None, buffer_inds=None: FakePick())
+    app._handle_recenter_gesture()
+    assert np.allclose(app._gizmo_base, np.eye(4))
+
+    no_cloud = FakeIO(mouse_pos=(120.0, 240.0))
+    no_cloud.MouseDoubleClicked = [False, True, False]
+    app, _ = make_app(monkeypatch, io=no_cloud)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
+    monkeypatch.setattr("pcd_segmentation.app.ps.pick",
+                        lambda screen_coords=None, buffer_inds=None: FakePick())
+    app._handle_recenter_gesture()
+    assert np.allclose(app._gizmo_base, np.eye(4))

@@ -89,6 +89,36 @@ def test_poll_gizmo_updates_transform(monkeypatch):
     assert app._dirty
 
 
+def test_poll_gizmo_rotates_about_gizmo_center(monkeypatch):
+    """Rotating the gizmo about its center pivots the cloud about that point."""
+    app, gizmo = make_app(monkeypatch)
+    pivot = np.array([3.0, 4.0, 5.0])
+    app.set_gizmo_enabled(True)
+    app._set_gizmo_center(pivot)
+    app._sync_gizmo_transform()
+
+    angle = np.pi / 2.0
+    rot = np.array(
+        [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    rot4 = np.eye(4)
+    rot4[:3, :3] = rot
+    base = np.eye(4)
+    base[:3, 3] = pivot
+    gizmo.set_transform(base @ rot4)  # ImGuizmo keeps the center fixed on rotation
+    app._poll_gizmo()
+
+    expected = base @ rot4 @ np.linalg.inv(base)
+    assert np.allclose(app.transform, expected)
+    object_pivot = np.linalg.inv(app.transform) @ np.array([*pivot, 1.0])
+    moved = transform.apply_transform(object_pivot[:3][None, :], app.transform)[0]
+    assert np.allclose(moved, pivot)
+
+
 def test_poll_gizmo_disabled_is_noop(monkeypatch):
     """A disabled gizmo is never polled."""
     app, gizmo = make_app(monkeypatch)

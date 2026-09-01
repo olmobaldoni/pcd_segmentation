@@ -122,7 +122,7 @@ class App:
         self.selection = np.empty(0, dtype=np.int64)
         self.transform = np.eye(4, dtype=np.float64)
         self.gizmo_enabled = False
-        self._gizmo_base = transform.translation_matrix(cloud.points)
+        self._set_gizmo_center(self._cloud_world_centroid())
         self._reset_combo_ids()
         self._dirty = True
         self.status_text = f"Loaded {path} ({cloud.num_points} points)"
@@ -427,7 +427,7 @@ class App:
             return
         self.manager.apply_state(state["segments"], state["labels"])
         self.transform = state["transform"]
-        self._gizmo_base = transform.translation_matrix(self.cloud.points)
+        self._set_gizmo_center(self._cloud_world_centroid())
         self._sync_gizmo_transform()
         self._reset_combo_ids()
         self._dirty = True
@@ -483,7 +483,7 @@ class App:
         if enabled:
             self.set_active_tool("none")
             if self.cloud is not None:
-                self._gizmo_base = transform.translation_matrix(self.cloud.points)
+                self._set_gizmo_center(self._cloud_world_centroid())
             self._sync_gizmo_transform()
             if self._gizmo is not None:
                 self._gizmo.set_enabled(True)
@@ -506,7 +506,7 @@ class App:
         if self.cloud.normals is not None:
             self.cloud.normals = transform.rotate_vectors(self.cloud.normals, self.transform)
         self.transform = np.eye(4, dtype=np.float64)
-        self._gizmo_base = transform.translation_matrix(self.cloud.points)
+        self._set_gizmo_center(self._cloud_world_centroid())
         self._sync_gizmo_transform()
         self._dirty = True
         self.status_text = "Transform applied to cloud"
@@ -514,9 +514,7 @@ class App:
     def reset_transform(self) -> None:
         """Reset the accumulated gizmo transform to identity."""
         self.transform = np.eye(4, dtype=np.float64)
-        self._gizmo_base = transform.translation_matrix(
-            self.cloud.points if self.cloud is not None else np.empty((0, 3))
-        )
+        self._set_gizmo_center(self._cloud_world_centroid())
         self._sync_gizmo_transform()
         self._dirty = True
         self.status_text = "Transform reset"
@@ -533,9 +531,45 @@ class App:
         panels.draw_toolbar(self)
         panels.draw_segments_panel(self)
         panels.draw_transform_panel(self)
+        self._handle_recenter_gesture()
         self._handle_tool_input()
         self._handle_shortcuts()
         self._rebuild_scene_if_dirty()
+
+    def _handle_recenter_gesture(self) -> None:
+        """Place the transformation gizmo center on a double right-click.
+
+        A double right-click picks the content under the cursor and moves the
+        gizmo widget center to the picked world position, so subsequent
+        translate/rotate/scale gestures pivot about that point. The gesture
+        works on any structure: points, faces, and so on.
+        """
+        io = psim.GetIO()
+        if not io.MouseDoubleClicked[1]:
+            return
+        if self.cloud is None or not psim.IsMousePosValid():
+            return
+        if io.WantCaptureMouse or psim.IsAnyItemHovered():
+            return
+        pick = ps.pick(screen_coords=tuple(io.MousePos))
+        if pick.is_hit:
+            self.set_gizmo_pivot(np.asarray(pick.position, dtype=np.float64))
+
+    def set_gizmo_pivot(self, world_point: np.ndarray) -> None:
+        """Place the transformation gizmo center at a world-space point.
+
+        The gizmo is shown (if hidden) and re-centered on the given point;
+        the active selection tool is switched off when the gizmo appears.
+
+        Parameters
+        ----------
+        world_point : np.ndarray
+            World-space position where the gizmo center should sit.
+        """
+        if not self.gizmo_enabled:
+            self.set_gizmo_enabled(True)
+        self._set_gizmo_center(world_point)
+        self._sync_gizmo_transform()
 
     def _handle_tool_input(self) -> None:
         """Feed the current frame input to the active selection tool."""
@@ -547,14 +581,20 @@ class App:
         tool.draw()
 
     def _poll_gizmo(self) -> None:
-        """Read the gizmo matrix and update the accumulated transform."""
+        """Read the gizmo matrix and update the accumulated transform.
+
+        The gizmo's incremental motion is applied about the gizmo center, so
+        rotations and scales pivot around wherever the widget is currently
+        placed (the cloud centroid or a point picked by the user).
+        """
         if self._gizmo is None or not self._gizmo.get_enabled():
             return
         combined = np.asarray(self._gizmo.get_transform(), dtype=np.float64)
-        if np.allclose(combined, self._gizmo_last):
+        if np.allclose(combined, np.asarray(self._gizmo_last, dtype=np.float32)):
             return
+        delta = combined @ np.linalg.inv(self._gizmo_last)
+        self.transform = delta @ self.transform
         self._gizmo_last = combined
-        self.transform = transform.relative_transform(combined, self._gizmo_base)
         self._dirty = True
 
     def _sync_gizmo_transform(self) -> None:
@@ -563,6 +603,31 @@ class App:
             return
         self._gizmo_last = self._gizmo_base @ self.transform
         self._gizmo.set_transform(self._gizmo_last)
+
+    def _set_gizmo_center(self, world_point: np.ndarray) -> None:
+        """Point the gizmo base so its widget center sits at a world point.
+
+        Parameters
+        ----------
+        world_point : np.ndarray
+            Desired world-space gizmo center, shape ``(3,)``.
+        """
+        center = np.asarray(world_point, dtype=np.float64)
+        translation = transform.extract_translation(self.transform)
+        self._gizmo_base = transform.translation_matrix((center - translation)[None, :])
+
+    def _cloud_world_centroid(self) -> np.ndarray:
+        """Return the world-space position of the cloud centroid.
+
+        Returns
+        -------
+        np.ndarray
+            World-space centroid, shape ``(3,)``.
+        """
+        if self.cloud is None:
+            return np.zeros(3, dtype=np.float64)
+        centroid = self.cloud.points.mean(axis=0)[None, :]
+        return transform.apply_transform(centroid, self.transform)[0]
 
     def _handle_shortcuts(self) -> None:
         """Process the global keyboard shortcuts.

@@ -67,6 +67,7 @@ def draw_toolbar(app: App) -> None:
     psim.TextDisabled("v: lasso | b: box | Esc: navigate | q: quit")
     psim.TextDisabled("c: confirm | s: segment | x: clear | i: invert")
     psim.TextDisabled("u / Ctrl+Z: undo | Ctrl+R / Ctrl+Y: redo")
+    psim.TextDisabled("double right-click: move gizmo to point")
     if psim.Button("Confirm"):
         app.confirm_selection()
     psim.SameLine()

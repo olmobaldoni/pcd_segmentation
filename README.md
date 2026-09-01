@@ -71,6 +71,13 @@ Files can also be dragged & dropped onto the viewer window.
 
 Shortcuts are disabled while a text field has focus.
 
+### Mouse gestures
+
+| Gesture | Action |
+| ------- | ------ |
+| double right-click on a point | place the transformation gizmo center at that point (the gizmo is shown if hidden, and the active selection tool is switched off) |
+| double left-click / Ctrl+Shift+click | native Polyscope view recenter |
+
 ## Development
 
 ```bash
