@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pcd_segmentation.app import App
+from pcd_segmentation.app import POINT_RADIUS_DEFAULT, SELECTION_RADIUS_SCALE, App
 from pcd_segmentation.core import transform
 from pcd_segmentation.core.model import PointCloudData
 from pcd_segmentation.core.segments import SegmentManager
@@ -78,15 +78,15 @@ def test_poll_gizmo_updates_transform(monkeypatch):
     """Dragging the gizmo updates the transform; idle polling is a no-op."""
     app, gizmo = make_app(monkeypatch)
     app.set_gizmo_enabled(True)
-    app._dirty = False
+    app._transform_dirty = False
     app._poll_gizmo()
-    assert not app._dirty
+    assert not app._transform_dirty
     object_matrix = np.eye(4)
     object_matrix[:3, 3] = [1.0, 2.0, 3.0]
     gizmo.set_transform(app._gizmo_base @ object_matrix)
     app._poll_gizmo()
     assert np.allclose(app.transform, object_matrix)
-    assert app._dirty
+    assert app._transform_dirty
 
 
 def test_poll_gizmo_rotates_about_gizmo_center(monkeypatch):
@@ -151,12 +151,30 @@ def test_apply_transform_identity_is_noop(monkeypatch):
 
 
 def test_reset_transform(monkeypatch):
-    """Reset clears the accumulated transform."""
+    """Reset clears the accumulated transform and flags a transform update."""
     app, gizmo = make_app(monkeypatch)
     app.transform[:3, 3] = [4.0, 5.0, 6.0]
     app.reset_transform()
     assert np.allclose(app.transform, np.eye(4))
-    assert app._dirty
+    assert app._transform_dirty
+
+
+def test_selection_changes_only_flag_selection(monkeypatch):
+    """Selection changes do not trigger a rebuild of the main cloud."""
+    from pcd_segmentation.selection.base import SelectionMode
+
+    app, gizmo = make_app(monkeypatch)
+    app._dirty = False
+    app._selection_dirty = False
+    app.add_selection(np.arange(5), SelectionMode.SET)
+    assert app._selection_dirty
+    assert not app._dirty
+    app.clear_selection()
+    assert app._selection_dirty
+    assert not app._dirty
+    app.invert_selection()
+    assert app._selection_dirty
+    assert not app._dirty
 
 
 def test_selecting_tool_disables_gizmo(monkeypatch):
@@ -187,3 +205,60 @@ def test_visible_colors(monkeypatch):
     app.show_original_colors = False
     expected_gray = np.tile(config.UNASSIGNED_COLOR, (10, 1))
     assert np.allclose(app._visible_colors(np.arange(10)), expected_gray)
+
+
+class FakeCloud:
+    """Stand-in for a polyscope point cloud exposing a radius."""
+
+    def __init__(self, radius: float) -> None:
+        self.radius = radius
+
+    def get_radius(self) -> float:
+        """Return the stored radius."""
+        return self.radius
+
+    def set_radius(self, radius: float, relative: bool = True) -> None:
+        """Store the given radius."""
+        self.radius = float(radius)
+
+
+def test_radius_constants():
+    """The default radius and selection scale are fixed."""
+    assert POINT_RADIUS_DEFAULT == 0.0002
+    assert SELECTION_RADIUS_SCALE == 1.5
+
+
+def test_selection_radius_follows_cloud(monkeypatch):
+    """The selection radius is 1.5x the current cloud radius."""
+    app, gizmo = make_app(monkeypatch)
+    cloud = FakeCloud(0.0001)
+    monkeypatch.setattr("pcd_segmentation.app.ps.has_point_cloud", lambda name: True)
+    monkeypatch.setattr("pcd_segmentation.app.ps.get_point_cloud", lambda name: cloud)
+    assert np.isclose(app._selection_radius(), 0.00015)
+    cloud.radius = 0.0002
+    assert np.isclose(app._selection_radius(), 0.0003)
+
+
+def test_selection_radius_default_when_cloud_absent(monkeypatch):
+    """Without a registered cloud the default radius times the scale is used."""
+    app, gizmo = make_app(monkeypatch)
+    monkeypatch.setattr("pcd_segmentation.app.ps.has_point_cloud", lambda name: False)
+    assert np.isclose(app._selection_radius(), POINT_RADIUS_DEFAULT * SELECTION_RADIUS_SCALE)
+
+
+def test_sync_selection_radius_tracks_cloud_changes(monkeypatch):
+    """Changing the cloud radius updates the selection highlight radius."""
+    app, gizmo = make_app(monkeypatch)
+    cloud = FakeCloud(0.0001)
+    selection = FakeCloud(0.00015)
+    monkeypatch.setattr("pcd_segmentation.app.ps.has_point_cloud", lambda name: True)
+    monkeypatch.setattr(
+        "pcd_segmentation.app.ps.get_point_cloud",
+        lambda name: cloud if name == "cloud" else selection,
+    )
+    app.cloud = PointCloudData(points=np.zeros((5, 3)))
+    app._sync_selection_radius()
+    assert np.isclose(selection.radius, 0.00015)
+    cloud.radius = 0.0002
+    app._sync_selection_radius()
+    assert np.isclose(selection.radius, 0.0003)

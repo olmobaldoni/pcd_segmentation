@@ -34,6 +34,7 @@ default = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
 segment = "python -m pcd_segmentation"
+reference = "python -m pcd_segmentation.reference"
 test = "pytest"
 lint = "ruff check ."
 format = "ruff format ."

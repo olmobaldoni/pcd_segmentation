@@ -71,9 +71,7 @@ def read_pcd(path: Path) -> PointCloudData:
     fields = header["FIELDS"].split()
     _validate_pcd_layout(path, header, fields)
     if data_mode == "binary_compressed":
-        raise ValueError(
-            f"PCD file {path} uses binary_compressed storage, which is not supported"
-        )
+        raise ValueError(f"PCD file {path} uses binary_compressed storage, which is not supported")
     if data_mode == "ascii":
         points, colors = _read_pcd_ascii(path, header, count, fields)
     else:

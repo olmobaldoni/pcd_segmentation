@@ -23,12 +23,14 @@ class FakeIO:
     ) -> None:
         self.MousePos = mouse_pos
         self.MouseClicked = [clicked, False, False]
+        self.MouseClickedPos = [(mouse_pos if clicked else (0.0, 0.0))] * 5
         self.MouseDoubleClicked = [False, False, False]
         self.MouseReleased = [False, False, False]
         self.WantCaptureMouse = want_capture_mouse
         self.WantTextInput = want_text
         self.KeyCtrl = ctrl
         self.KeyShift = False
+        self.DisplaySize = (1280.0, 720.0)
 
 
 def make_app(
@@ -134,7 +136,11 @@ def test_shortcuts_ignored_while_typing(monkeypatch):
 
 
 def test_lasso_click_guards(monkeypatch):
-    """Lasso clicks add vertices only on empty, unclaimed screen space."""
+    """Lasso clicks add vertices only on empty, unclaimed screen space.
+
+    The vertex is accepted one frame late, when ``io.WantCaptureMouse`` is
+    up to date, so clicks landing on the side panels are discarded.
+    """
     for want_capture_mouse, hover_ui, expected in [
         (False, False, [(120.0, 240.0)]),
         (False, True, []),
@@ -147,13 +153,17 @@ def test_lasso_click_guards(monkeypatch):
             "pcd_segmentation.app.psim.IsAnyItemHovered",
             lambda hover_ui=hover_ui: hover_ui,
         )
-        io = FakeIO(
+        tool = app._tools["lasso"]
+        clicked = FakeIO(
             mouse_pos=(120.0, 240.0),
             clicked=True,
             want_capture_mouse=want_capture_mouse,
         )
-        app._tools["lasso"].handle_input(io)
-        assert app._tools["lasso"].vertices == expected
+        tool.handle_input(clicked)
+        settled = FakeIO(want_capture_mouse=want_capture_mouse)
+        tool.handle_input(settled)
+        assert tool.vertices == expected
+        assert tool._pending_click is None
 
 
 def test_box_drag_start_on_ui_is_ignored(monkeypatch):
@@ -165,6 +175,56 @@ def test_box_drag_start_on_ui_is_ignored(monkeypatch):
     tool = app._tools["box"]
     tool.handle_input(FakeIO(mouse_pos=(120.0, 240.0), clicked=True))
     assert not tool.dragging
+
+
+def _draw_polygon(tool, positions):
+    """Drive two frames per click so the deferred vertices are accepted."""
+    for pos in positions:
+        tool.handle_input(FakeIO(mouse_pos=pos, clicked=True))
+        tool.handle_input(FakeIO())
+
+
+def test_lasso_closes_on_first_node(monkeypatch):
+    """Clicking on the first node closes the polygon."""
+    app, _ = make_app(monkeypatch)
+    app.set_active_tool("lasso")
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsMousePosValid", lambda: True)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsKeyPressed", lambda _: False)
+    tool = app._tools["lasso"]
+    app.view_state = lambda: None  # finish cancels before any selection work
+    _draw_polygon(tool, [(100.0, 100.0), (200.0, 100.0), (200.0, 200.0)])
+    assert len(tool.vertices) == 3
+    _draw_polygon(tool, [(104.0, 102.0)])  # within 10px of the first node
+    assert tool.vertices == []
+
+
+def test_lasso_does_not_close_on_middle_node(monkeypatch):
+    """Clicking near a non-first node only adds another vertex."""
+    app, _ = make_app(monkeypatch)
+    app.set_active_tool("lasso")
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsMousePosValid", lambda: True)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsKeyPressed", lambda _: False)
+    tool = app._tools["lasso"]
+    _draw_polygon(tool, [(100.0, 100.0), (200.0, 100.0), (200.0, 200.0)])
+    _draw_polygon(tool, [(203.0, 101.0)])  # near the second node, not the first
+    assert len(tool.vertices) == 4
+
+
+def test_lasso_ignores_invalid_click_positions(monkeypatch):
+    """Non-finite or out-of-window clicks are never queued."""
+    app, _ = make_app(monkeypatch)
+    app.set_active_tool("lasso")
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsMousePosValid", lambda: True)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
+    monkeypatch.setattr("pcd_segmentation.app.psim.IsKeyPressed", lambda _: False)
+    tool = app._tools["lasso"]
+    for bad_pos in [(float("nan"), 0.0), (99999.0, 0.0)]:
+        tool.handle_input(FakeIO(mouse_pos=bad_pos, clicked=True))
+        tool.handle_input(FakeIO())
+        assert tool.vertices == []
+    assert tool._pending_click is None
 
 
 class FakePick:
@@ -186,10 +246,13 @@ def test_double_right_click_moves_gizmo_to_point(monkeypatch):
     view_calls: list[object] = []
     monkeypatch.setattr("pcd_segmentation.app.psim.IsMousePosValid", lambda: True)
     monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
-    monkeypatch.setattr("pcd_segmentation.app.ps.pick",
-                        lambda screen_coords=None, buffer_inds=None: FakePick())
-    monkeypatch.setattr("pcd_segmentation.app.ps.set_view_center_and_look_at",
-                        lambda pos, fly_to=False: view_calls.append(pos))
+    monkeypatch.setattr(
+        "pcd_segmentation.app.ps.pick", lambda screen_coords=None, buffer_inds=None: FakePick()
+    )
+    monkeypatch.setattr(
+        "pcd_segmentation.app.ps.set_view_center_and_look_at",
+        lambda pos, fly_to=False: view_calls.append(pos),
+    )
     app._handle_recenter_gesture()
     assert app.gizmo_enabled
     assert np.allclose(app._gizmo_base[:3, 3], [1.0, 2.0, 3.0])
@@ -203,8 +266,10 @@ def test_double_right_click_noop_cases(monkeypatch):
     app, _ = make_app(monkeypatch, io=no_hit)
     monkeypatch.setattr("pcd_segmentation.app.psim.IsMousePosValid", lambda: True)
     monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
-    monkeypatch.setattr("pcd_segmentation.app.ps.pick",
-                        lambda screen_coords=None, buffer_inds=None: FakePick(is_hit=False))
+    monkeypatch.setattr(
+        "pcd_segmentation.app.ps.pick",
+        lambda screen_coords=None, buffer_inds=None: FakePick(is_hit=False),
+    )
     app._handle_recenter_gesture()
     assert np.allclose(app._gizmo_base, np.eye(4))
 
@@ -212,8 +277,9 @@ def test_double_right_click_noop_cases(monkeypatch):
     hover.MouseDoubleClicked = [False, True, False]
     app, _ = make_app(monkeypatch, io=hover)
     monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: True)
-    monkeypatch.setattr("pcd_segmentation.app.ps.pick",
-                        lambda screen_coords=None, buffer_inds=None: FakePick())
+    monkeypatch.setattr(
+        "pcd_segmentation.app.ps.pick", lambda screen_coords=None, buffer_inds=None: FakePick()
+    )
     app._handle_recenter_gesture()
     assert np.allclose(app._gizmo_base, np.eye(4))
 
@@ -221,7 +287,8 @@ def test_double_right_click_noop_cases(monkeypatch):
     no_cloud.MouseDoubleClicked = [False, True, False]
     app, _ = make_app(monkeypatch, io=no_cloud)
     monkeypatch.setattr("pcd_segmentation.app.psim.IsAnyItemHovered", lambda: False)
-    monkeypatch.setattr("pcd_segmentation.app.ps.pick",
-                        lambda screen_coords=None, buffer_inds=None: FakePick())
+    monkeypatch.setattr(
+        "pcd_segmentation.app.ps.pick", lambda screen_coords=None, buffer_inds=None: FakePick()
+    )
     app._handle_recenter_gesture()
     assert np.allclose(app._gizmo_base, np.eye(4))

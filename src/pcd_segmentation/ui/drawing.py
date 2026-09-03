@@ -57,6 +57,31 @@ def draw_closed_polyline(
     draw_list.AddPolyline(closed, color, 0, thickness)
 
 
+def draw_open_polyline(
+    draw_list: Any,
+    points: np.ndarray,
+    color: int,
+    thickness: float = 2.0,
+) -> None:
+    """Draw an open polyline joining the given pixel coordinates.
+
+    Parameters
+    ----------
+    draw_list : ImDrawList
+        Target draw list.
+    points : np.ndarray
+        Array of shape ``(M, 2)`` with pixel coordinates.
+    color : int
+        Packed RGBA color.
+    thickness : float
+        Line thickness in pixels.
+    """
+    vertices = np.asarray(points, dtype=np.float32)
+    if len(vertices) < 2:
+        return
+    draw_list.AddPolyline(vertices, color, 0, thickness)
+
+
 def draw_filled_polygon(draw_list: Any, points: np.ndarray, color: int, alpha: float) -> None:
     """Draw a filled, possibly concave polygon.
 

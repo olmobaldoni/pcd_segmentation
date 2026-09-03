@@ -19,6 +19,22 @@ TOOL_NAMES: tuple[tuple[str, str], ...] = (
 )
 """Tool keys and their display labels."""
 
+KEYBINDINGS: tuple[tuple[str, str], ...] = (
+    ("v", "lasso tool"),
+    ("b", "box tool"),
+    ("Esc", "navigation mode"),
+    ("c", "confirm selection"),
+    ("s", "create segment from selection"),
+    ("x", "clear selection"),
+    ("i", "invert selection (over visible points)"),
+    ("u / Ctrl+Z", "undo"),
+    ("Ctrl+R / Ctrl+Y", "redo"),
+    ("q", "quit"),
+    ("double right-click", "move gizmo to point"),
+    ("double left-click / Ctrl+Shift+click", "native view recenter"),
+)
+"""Keyboard shortcuts and mouse gestures, shown in the shortcuts panel."""
+
 
 def draw_file_panel(app: App) -> None:
     """Draw the file, project, and export controls.
@@ -64,10 +80,6 @@ def draw_toolbar(app: App) -> None:
     psim.TextUnformatted(f"Selected: {len(app.selection)} points")
     if app.active_tool_name != "none":
         psim.TextDisabled("Ctrl: remove  |  Shift: add")
-    psim.TextDisabled("v: lasso | b: box | Esc: navigate | q: quit")
-    psim.TextDisabled("c: confirm | s: segment | x: clear | i: invert")
-    psim.TextDisabled("u / Ctrl+Z: undo | Ctrl+R / Ctrl+Y: redo")
-    psim.TextDisabled("double right-click: move gizmo to point")
     if psim.Button("Confirm"):
         app.confirm_selection()
     psim.SameLine()
@@ -260,3 +272,27 @@ def _draw_segment_item(app: App, segment: Segment) -> None:
         app.set_segment_visible(segment.id, visible)
     if psim.Button("Delete segment"):
         app.delete_segment(segment.id)
+
+
+def draw_shortcuts_panel(app: App) -> None:
+    """Draw the collapsible reference panel listing the keybindings.
+
+    Parameters
+    ----------
+    app : App
+        Owning application.
+    """
+    if not psim.CollapsingHeader("Shortcuts"):
+        return
+    if not psim.BeginTable("shortcuts", 2, psim.ImGuiTableFlags_RowBg):
+        return
+    psim.TableSetupColumn("Key")
+    psim.TableSetupColumn("Action")
+    psim.TableHeadersRow()
+    for key, action in KEYBINDINGS:
+        psim.TableNextRow()
+        psim.TableNextColumn()
+        psim.TextUnformatted(key)
+        psim.TableNextColumn()
+        psim.TextUnformatted(action)
+    psim.EndTable()

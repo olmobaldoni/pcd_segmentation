@@ -405,7 +405,7 @@ class SegmentManager:
     ) -> None:
         """Push a new undo record, trimming the stack to its maximum size."""
         self._undo_stack.append((description, undo_fn, redo_fn))
-        del self._undo_stack[:-config.MAX_UNDO]
+        del self._undo_stack[: -config.MAX_UNDO]
         self._redo_stack.clear()
 
     @staticmethod

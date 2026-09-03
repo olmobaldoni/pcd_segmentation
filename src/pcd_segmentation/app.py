@@ -35,6 +35,12 @@ ACTION_KEYS: dict[str, str] = {
 QUIT_KEY: str = "q"
 """Single-key shortcut that closes the viewer window."""
 
+POINT_RADIUS_DEFAULT: float = 0.0002
+"""Default absolute radius (world units) of the main point cloud."""
+
+SELECTION_RADIUS_SCALE: float = 1.5
+"""The selection highlight points are this many times larger than the cloud."""
+
 
 class App:
     """Top-level application state and event handling.
@@ -79,6 +85,9 @@ class App:
         self._gizmo: Any = None
         self._gizmo_base: np.ndarray = np.eye(4, dtype=np.float64)
         self._gizmo_last: np.ndarray = np.eye(4, dtype=np.float64)
+        self._selection_dirty = False
+        self._transform_dirty = False
+        self._registered_indices: np.ndarray | None = None
 
     def run(self) -> None:
         """Open the interactive Polyscope window and run the event loop."""
@@ -124,6 +133,9 @@ class App:
         self.gizmo_enabled = False
         self._set_gizmo_center(self._cloud_world_centroid())
         self._reset_combo_ids()
+        self._registered_indices = None
+        self._selection_dirty = False
+        self._transform_dirty = False
         self._dirty = True
         self.status_text = f"Loaded {path} ({cloud.num_points} points)"
         return True
@@ -220,18 +232,18 @@ class App:
             self.selection = np.union1d(self.selection, indices)
         else:
             self.selection = np.setdiff1d(self.selection, indices)
-        self._dirty = True
+        self._selection_dirty = True
 
     def clear_selection(self) -> None:
         """Discard the current selection."""
         self.selection = np.empty(0, dtype=np.int64)
-        self._dirty = True
+        self._selection_dirty = True
 
     def invert_selection(self) -> None:
         """Invert the selection over the visible points."""
         visible = self.visible_indices()
         self.selection = np.setdiff1d(visible, self.selection)
-        self._dirty = True
+        self._selection_dirty = True
 
     def confirm_selection(self) -> None:
         """Assign the selected points to the target segment."""
@@ -508,6 +520,7 @@ class App:
         self.transform = np.eye(4, dtype=np.float64)
         self._set_gizmo_center(self._cloud_world_centroid())
         self._sync_gizmo_transform()
+        self._registered_indices = None  # points changed: re-register next rebuild
         self._dirty = True
         self.status_text = "Transform applied to cloud"
 
@@ -516,7 +529,7 @@ class App:
         self.transform = np.eye(4, dtype=np.float64)
         self._set_gizmo_center(self._cloud_world_centroid())
         self._sync_gizmo_transform()
-        self._dirty = True
+        self._transform_dirty = True
         self.status_text = "Transform reset"
 
     def transform_translation_text(self) -> str:
@@ -531,6 +544,7 @@ class App:
         panels.draw_toolbar(self)
         panels.draw_segments_panel(self)
         panels.draw_transform_panel(self)
+        panels.draw_shortcuts_panel(self)
         self._handle_recenter_gesture()
         self._handle_tool_input()
         self._handle_shortcuts()
@@ -595,7 +609,7 @@ class App:
         delta = combined @ np.linalg.inv(self._gizmo_last)
         self.transform = delta @ self.transform
         self._gizmo_last = combined
-        self._dirty = True
+        self._transform_dirty = True
 
     def _sync_gizmo_transform(self) -> None:
         """Push the accumulated transform to the gizmo widget."""
@@ -692,46 +706,118 @@ class App:
                 self.status_text = f"Unsupported file: {path}"
 
     def _rebuild_scene_if_dirty(self) -> None:
-        """Rebuild the Polyscope structures when the scene is stale."""
+        """Rebuild the Polyscope structures when the scene is stale.
+
+        The three flags are handled independently so that, e.g., a selection
+        change re-registers only the small highlight cloud while the main
+        cloud (which did not change) is left untouched.
+        """
         if self._dirty:
             self._dirty = False
             self._rebuild_scene()
+        if self._transform_dirty:
+            self._transform_dirty = False
+            self._apply_transform_to_structures()
+        if self._selection_dirty:
+            self._selection_dirty = False
+            self._rebuild_selection_cloud()
+        self._sync_selection_radius()
+
+    def _sync_selection_radius(self) -> None:
+        """Keep the selection highlight radius in step with the cloud radius.
+
+        The main-cloud radius can be changed from the Polyscope UI; whenever
+        it does, the selection points are resized so that they stay
+        ``SELECTION_RADIUS_SCALE`` times larger than the cloud.
+        """
+        if self.cloud is None or not ps.has_point_cloud(config.SELECTION_NAME):
+            return
+        target = self._selection_radius()
+        selection = ps.get_point_cloud(config.SELECTION_NAME)
+        if not np.isclose(selection.get_radius(), target, rtol=1e-3, atol=1e-12):
+            selection.set_radius(target, relative=False)
+
+    def _apply_transform_to_structures(self) -> None:
+        """Push the accumulated transform to the registered structures."""
+        for name in (config.CLOUD_NAME, config.SELECTION_NAME):
+            if ps.has_point_cloud(name):
+                ps.get_point_cloud(name).set_transform(self.transform)
 
     def _rebuild_scene(self) -> None:
         """Register the visible cloud and the selection highlight."""
         if self.cloud is None:
             ps.remove_point_cloud(config.CLOUD_NAME, error_if_absent=False)
             ps.remove_point_cloud(config.SELECTION_NAME, error_if_absent=False)
+            self._registered_indices = None
             return
         indices = self.visible_indices()
         if len(indices) == 0:
             ps.remove_point_cloud(config.CLOUD_NAME, error_if_absent=False)
+            self._registered_indices = None
         else:
-            ps_cloud = ps.register_point_cloud(
-                config.CLOUD_NAME,
-                self.cloud.points[indices],
-                point_render_mode="quad",
-                enabled=True,
-            )
+            self._update_main_cloud(indices)
+        self._rebuild_selection_cloud()
+
+    def _update_main_cloud(self, indices: np.ndarray) -> None:
+        """Register the main cloud, or update it in place when it is unchanged.
+
+        When the visible point set is the same as the one already registered,
+        only the per-point colors and the transform are refreshed, avoiding a
+        costly structure re-registration (GPU buffer rebuild).
+
+        Parameters
+        ----------
+        indices : np.ndarray
+            Visible point indices, shape ``(M,)``.
+        """
+        if self._registered_indices is not None and np.array_equal(
+            indices, self._registered_indices
+        ):
+            ps_cloud = ps.get_point_cloud(config.CLOUD_NAME)
             ps_cloud.add_color_quantity("segments", self._visible_colors(indices), enabled=True)
             ps_cloud.set_transform(self.transform)
-        self._rebuild_selection_cloud()
+            return
+        ps_cloud = ps.register_point_cloud(
+            config.CLOUD_NAME,
+            self.cloud.points[indices],
+            point_render_mode="quad",
+            enabled=True,
+        )
+        ps_cloud.set_radius(POINT_RADIUS_DEFAULT, relative=False)
+        ps_cloud.add_color_quantity("segments", self._visible_colors(indices), enabled=True)
+        ps_cloud.set_transform(self.transform)
+        self._registered_indices = np.asarray(indices, dtype=np.int64).copy()
+
+    def _selection_radius(self) -> float:
+        """Return the absolute radius for the selection highlight points.
+
+        The selection points are ``SELECTION_RADIUS_SCALE`` times larger than
+        the current main-cloud radius, so they stay in step with the cloud
+        when its radius changes.
+
+        Returns
+        -------
+        float
+            Absolute radius in world units.
+        """
+        if ps.has_point_cloud(config.CLOUD_NAME):
+            base = ps.get_point_cloud(config.CLOUD_NAME).get_radius()
+        else:
+            base = POINT_RADIUS_DEFAULT
+        return float(base) * SELECTION_RADIUS_SCALE
 
     def _rebuild_selection_cloud(self) -> None:
         """Register the highlight cloud for the current selection."""
         if self.cloud is None or len(self.selection) == 0:
             ps.remove_point_cloud(config.SELECTION_NAME, error_if_absent=False)
             return
-        base_radius = 0.005
-        if ps.has_point_cloud(config.CLOUD_NAME):
-            base_radius = ps.get_point_cloud(config.CLOUD_NAME).get_radius()
         ps_cloud = ps.register_point_cloud(
             config.SELECTION_NAME,
             self.cloud.points[self.selection],
             color=config.SELECTION_COLOR,
             point_render_mode="quad",
         )
-        ps_cloud.set_radius(base_radius * 2.0)
+        ps_cloud.set_radius(self._selection_radius(), relative=False)
         ps_cloud.set_transform(self.transform)
 
     def _visible_colors(self, indices: np.ndarray) -> np.ndarray:

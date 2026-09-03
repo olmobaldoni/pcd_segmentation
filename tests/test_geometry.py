@@ -6,6 +6,7 @@ import numpy as np
 from conftest import make_view
 
 from pcd_segmentation.selection.geometry import (
+    is_simple_polygon,
     points_in_polygon,
     points_in_rect,
     project_to_screen,
@@ -56,6 +57,17 @@ def test_points_in_polygon_square():
     )
     inside = points_in_polygon(points, square)
     assert inside.tolist() == [True, False, False, True]
+
+
+def test_is_simple_polygon():
+    """Simple polygons are detected, self-intersecting ones are rejected."""
+    square = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
+    assert is_simple_polygon(square)
+    concave = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [5.0, 10.0], [5.0, 5.0], [0.0, 5.0]])
+    assert is_simple_polygon(concave)  # concave but not self-intersecting
+    bowtie = np.array([[0.0, 0.0], [10.0, 10.0], [0.0, 10.0], [10.0, 0.0]])
+    assert not is_simple_polygon(bowtie)
+    assert is_simple_polygon(np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]]))
 
 
 def test_points_in_polygon_concave_and_degenerate():

@@ -68,4 +68,3 @@ def test_relative_transform():
     object_matrix = np.eye(4)
     object_matrix[:3, 3] = [1.0, 2.0, 3.0]
     assert np.allclose(relative_transform(base @ object_matrix, base), object_matrix)
-

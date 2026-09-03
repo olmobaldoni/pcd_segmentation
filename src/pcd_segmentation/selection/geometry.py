@@ -133,3 +133,67 @@ def points_in_rect(
     x = screen_points[:, 0]
     y = screen_points[:, 1]
     return (x >= x_min) & (x <= x_max) & (y >= y_min) & (y <= y_max)
+
+
+def is_simple_polygon(polygon: np.ndarray) -> bool:
+    """Return whether a polygon is simple (its edges never self-intersect).
+
+    A concave but non-self-intersecting polygon is still simple. Simple
+    polygons can be filled reliably; self-intersecting ones produce undefined
+    fills with most triangulators and are rendered as an outline only.
+
+    Parameters
+    ----------
+    polygon : np.ndarray
+        Array of shape ``(M, 2)`` with the polygon vertices in order.
+
+    Returns
+    -------
+    bool
+        ``True`` when the polygon is simple, ``False`` when it self-intersects.
+    """
+    polygon = np.asarray(polygon, dtype=np.float64)
+    count = len(polygon)
+    if count < 4:
+        return True
+    for i in range(count):
+        a0, a1 = polygon[i], polygon[(i + 1) % count]
+        for j in range(i + 1, count):
+            b0, b1 = polygon[j], polygon[(j + 1) % count]
+            if _segments_properly_intersect(a0, a1, b0, b1):
+                return False
+    return True
+
+
+def _segments_properly_intersect(
+    a0: np.ndarray,
+    a1: np.ndarray,
+    b0: np.ndarray,
+    b1: np.ndarray,
+) -> bool:
+    """Return whether two segments cross at an interior point.
+
+    Shared endpoints (adjacent polygon edges) are not counted as crossings.
+
+    Parameters
+    ----------
+    a0, a1, b0, b1 : np.ndarray
+        Endpoints of the two segments.
+
+    Returns
+    -------
+    bool
+        ``True`` when the segments properly intersect.
+    """
+    d1 = _cross2d(a1 - a0, b0 - a0)
+    d2 = _cross2d(a1 - a0, b1 - a0)
+    d3 = _cross2d(b1 - b0, a0 - b0)
+    d4 = _cross2d(b1 - b0, a1 - b0)
+    if ((d1 > 0 > d2) or (d2 > 0 > d1)) and ((d3 > 0 > d4) or (d4 > 0 > d3)):
+        return True
+    return False
+
+
+def _cross2d(u: np.ndarray, v: np.ndarray) -> float:
+    """Return the 2D cross product (z component) of two in-plane vectors."""
+    return float(u[0] * v[1] - u[1] * v[0])

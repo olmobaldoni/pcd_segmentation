@@ -69,7 +69,8 @@ Files can also be dragged & dropped onto the viewer window.
 | `Ctrl+R` / `Ctrl+Y` | redo |
 | `q` | quit |
 
-Shortcuts are disabled while a text field has focus.
+Shortcuts are disabled while a text field has focus. A reference panel is
+available in the sidebar: expand **Shortcuts**.
 
 ### Mouse gestures
 
